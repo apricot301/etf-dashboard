@@ -14,20 +14,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 59개 전 종목 고유 코드(Symbol) 리스트
-TARGET_CODES = [
-    "487530", "481060", "486450", "488420", "482730", "482740",
-    "489440", "487310", "493260", "496610", "491760", "493250",
-    "488770", "489450", "491750", "493240", "492390", "480410",
-    "480420", "487290", "486440", "489370", "484550", "486460",
-    "480290", "480300", "490190", "490200", "490210", "490220",
-    "491410", "492580", "495170", "496150", "496160", "497330",
-    "497340", "498010", "498020", "498030", "499110", "499120",
-    "500110", "500120", "501230", "501240", "502340", "502350",
-    "503410", "503420", "504510", "504520", "505110", "505120",
-    "506110", "506120", "507110", "507120", "508110"
-]
-
 def calculate_returns(df_price):
     if df_price is None or df_price.empty:
         return 0, 0, 0, 0, 0
@@ -45,27 +31,31 @@ def fetch_and_process():
     decoded_key = urllib.parse.unquote(API_KEY)
     div_url = "https://apis.data.go.kr/1160100/service/GetSecuritiesProductInfoService/getETFDivdInfo"
     
-    print("주식 마스터 데이터 로딩 중...")
+    print("전체 국내 ETF 리스트 불러오는 중...")
     try:
         df_master = fdr.StockListing('ETF')
     except Exception as e:
         print(f"ETF 리스트 로드 실패: {e}")
         return
 
+    # '커버드콜' 또는 '배당' 또는 '고배당'이 포함된 ETF 종목들을 자동으로 전부 필터링
+    filtered_etfs = df_master[
+        df_master['Name'].str.contains('커버드콜|배당|고배당|타겟', na=False)
+    ]
+    
+    print(f"총 {len(filtered_etfs)}개의 대상 ETF를 자동으로 발굴했습니다. 수집을 시작합니다.")
     one_year_ago = (datetime.now() - relativedelta(years=1, days=15)).strftime('%Y-%m-%d')
     
-    for code in TARGET_CODES:
-        matched = df_master[df_master['Symbol'] == code]
-        if matched.empty:
-            print(f"[{code}] 마스터에서 코드를 찾을 수 없습니다.")
-            continue
-        name = matched.iloc[0]['Name']
+    success_count = 0
+    for idx, row in filtered_etfs.iterrows():
+        code = str(row['Symbol'])
+        name = row['Name']
         
         # 1. 주가 및 수익률 계산
         try:
             df_price = fdr.DataReader(code, one_year_ago)
             current_price, r1m, r3m, r6m, r1y = calculate_returns(df_price)
-        except Exception as e:
+        except:
             current_price, r1m, r3m, r6m, r1y = 0, 0, 0, 0, 0
             
         # 2. 분배금 데이터 수집
@@ -92,13 +82,14 @@ def fetch_and_process():
                         "return_1m": r1m, "return_3m": r3m, "return_6m": r6m, "return_1y": r1y
                     }
                     supabase.table("etf_dividends").upsert(db_data, on_conflict="symbol,dividend_base_date").execute()
-                    print(f"[{name}({code})] 적재 성공")
-                else:
-                    print(f"[{name}({code})] 공시된 배당 데이터 없음")
+                    print(f"[{name}({code})] 수집 성공")
+                    success_count += 1
         except Exception as e:
-            print(f"[{name}({code})] 에러: {e}")
+            pass
             
-        time.sleep(0.5)
+        time.sleep(0.3) # 서버 부하 방지 딜레이
+
+    print(f"총 {success_count}개 종목의 데이터 수집 및 적재가 완료되었습니다.")
 
 if __name__ == "__main__":
     fetch_and_process()
