@@ -21,13 +21,13 @@ if not df.empty:
     df = df[['name', 'dividend_base_date', 'payment_date', 'dividend_amount', 'tax_standard_amount', 'annual_yield', 'return_1m', 'return_3m', 'return_6m', 'return_1y']]
     df.columns = ['종목명', '배당기준일', '지급일자', '분배금(원)', '과표액(원)', '연환산분배율(%)', '1M(%)', '3M(%)', '6M(%)', '1Y(%)']
     
-    # 숫자 포맷 지정 (소수점 정리 및 수익률 색상 입히기)
+    # 숫자 포맷 지정 (소수점 정리)
     styled_df = df.style.format({
         '분배금(원)': '{:,.0f}',
         '과표액(원)': '{:,.0f}',
         '연환산분배율(%)': '{:.2f}',
         '1M(%)': '{:+.2f}', '3M(%)': '{:+.2f}', '6M(%)': '{:+.2f}', '1Y(%)': '{:+.2f}'
-    }).background_gradient(cmap='RdYlBu_r', subset=['1M(%)', '3M(%)', '6M(%)', '1Y(%)']) 
+    }).background_gradient(cmap='RdYlBu_r', subset=['1M(%)', '3M(%)', '6M(%)', '1Y(%)']) # 수익률 컬러 적용
     
     st.dataframe(styled_df, use_container_width=True, hide_index=True, height=800)
 else:
