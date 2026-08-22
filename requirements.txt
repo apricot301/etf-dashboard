@@ -1,3 +1,5 @@
 requests
 supabase
 pandas
+finance-datareader
+python-dateutil
