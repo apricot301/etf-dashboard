@@ -1,0 +1,26 @@
+name: Monthly ETF Data Collector
+
+on:
+  schedule:
+    # 매월 4일 오전 9시(한국시간 기준) 실행
+    - cron: '0 0 4 * *'
+  workflow_dispatch: # 직접 '실행' 버튼을 누를 수 있게 해줌
+
+jobs:
+  run-collector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      - name: Run Python Script
+        env:
+          DATA_GO_KR_API_KEY: ${{ secrets.DATA_GO_KR_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python collector.py
