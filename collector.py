@@ -12,6 +12,10 @@ from supabase import create_client, Client
 API_KEY = os.getenv("DATA_GO_KR_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+if not all([API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+    print("경고: 환경변수(API_KEY, SUPABASE_URL, SUPABASE_KEY)가 제대로 설정되지 않았습니다.")
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 2. 59개 전 종목 리스트
@@ -46,58 +50,78 @@ def fetch_and_process():
     decoded_key = urllib.parse.unquote(API_KEY)
     div_url = "https://apis.data.go.kr/1160100/service/GetSecuritiesProductInfoService/getETFDivdInfo"
     
-    # 3. ETF 목록 매핑
     print("국내 ETF 마스터 데이터 불러오는 중...")
-    df_master = fdr.StockListing('ETF')
-    
+    try:
+        df_master = fdr.StockListing('ETF')
+    except Exception as e:
+        print(f"ETF 리스트 로드 실패: {e}")
+        return
+
     now = datetime.now()
-    target_months = [f"{now.year}{now.month:02d}", f"{now.year}{now.month-1:02d}"]
+    # 안전하게 최근 3개월분을 모두 스캔하여 가장 최신 공시를 찾음
+    target_months = [
+        f"{now.year}{now.month:02d}", 
+        f"{now.year}{now.month-1:02d}" if now.month > 1 else f"{now.year-1}12",
+        f"{now.year}{now.month-2:02d}" if now.month > 2 else f"{now.year-1}{now.month+10}"
+    ]
     one_year_ago = (now - relativedelta(years=1, days=15)).strftime('%Y-%m-%d')
     
     for name in TARGET_NAMES:
         matched = df_master[df_master['Name'] == name]
         if matched.empty:
+            print(f"[{name}] 종목 코드를 찾을 수 없어 건너뜁니다.")
             continue
+            
         code = matched.iloc[0]['Symbol']
         
-        # 주가 데이터 및 수익률 계산
+        # 주가 데이터 수집 (예외 처리 강화)
         try:
             df_price = fdr.DataReader(code, one_year_ago)
             current_price, r1m, r3m, r6m, r1y = calculate_returns(df_price)
-        except:
+        except Exception as e:
+            print(f"[{name}] 주가 데이터 오류: {e}")
             current_price, r1m, r3m, r6m, r1y = 0, 0, 0, 0, 0
             
-        # 분배금 데이터 조회 (공공데이터포털)
-        params = {"serviceKey": decoded_key, "resultType": "json", "numOfRows": "20", "pageNo": "1", "likeSrtnCd": code}
+        # 분배금 데이터 수집 (타임아웃 15초로 넉넉히 연장)
+        params = {"serviceKey": decoded_key, "resultType": "json", "numOfRows": "30", "pageNo": "1", "likeSrtnCd": code}
         
         try:
-            res = requests.get(div_url, params=params, timeout=5).json()
-            items = res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
-            
-            for item in items:
-                bas_dt = str(item.get("dvdBasDt", ""))
-                if any(bas_dt.startswith(m) for m in target_months):
-                    div_amount = float(item.get("stkDivdCashPaymrtAmt", 0))
-                    
-                    # 연환산 분배율 계산 (최근 배당금 기준 12개월 단순 환산)
-                    annual_yield = round((div_amount * 12) / current_price * 100, 2) if current_price > 0 else 0
-                    
-                    db_data = {
-                        "symbol": code, "name": name,
-                        "dividend_base_date": bas_dt,
-                        "payment_date": item.get("cashDvdPayDt", "미정"),
-                        "dividend_amount": div_amount,
-                        "tax_standard_amount": float(item.get("taxStdAmt", 0)),
-                        "annual_yield": annual_yield,
-                        "return_1m": r1m, "return_3m": r3m, "return_6m": r6m, "return_1y": r1y
-                    }
-                    supabase.table("etf_dividends").upsert(db_data, on_conflict="symbol,dividend_base_date").execute()
-                    break # 가장 최근 해당 월 데이터 하나만 넣고 다음 종목으로 패스
-            print(f"[{name}] 데이터 적재 완료")
+            res = requests.get(div_url, params=params, timeout=15)
+            # JSON 파싱 전에 정상 응답(200)인지 확인
+            if res.status_code == 200:
+                data = res.json()
+                items = data.get("response", {}).get("body", {}).get("items", {}).get("item", [])
+                
+                # 가장 최근 해당 월 데이터 하나만 넣고 break
+                for item in items:
+                    bas_dt = str(item.get("dvdBasDt", ""))
+                    if any(bas_dt.startswith(m) for m in target_months):
+                        div_amount = float(item.get("stkDivdCashPaymrtAmt", 0))
+                        
+                        # 연환산 분배율 계산
+                        annual_yield = round((div_amount * 12) / current_price * 100, 2) if current_price > 0 else 0
+                        
+                        db_data = {
+                            "symbol": code, 
+                            "name": name,
+                            "dividend_base_date": bas_dt,
+                            "payment_date": item.get("cashDvdPayDt", "미정"),
+                            "dividend_amount": div_amount,
+                            "tax_standard_amount": float(item.get("taxStdAmt", 0)),
+                            "annual_yield": annual_yield,
+                            "return_1m": r1m, "return_3m": r3m, "return_6m": r6m, "return_1y": r1y
+                        }
+                        supabase.table("etf_dividends").upsert(db_data, on_conflict="symbol,dividend_base_date").execute()
+                        break 
+                print(f"[{name}] 처리 완료")
+            else:
+                print(f"[{name}] 공공데이터 API 응답 오류 (상태 코드: {res.status_code})")
+                
         except Exception as e:
-            print(f"[{name}] 수집 에러 발생")
+            print(f"[{name}] 분배금 수집/저장 에러 발생: {e}")
             
-        time.sleep(0.5) # 공공데이터포털 서버 과부하 방지용 딜레이
+        # 서버 과부하 및 Timeout 방지를 위해 1.0초 대기 (59개 종목이므로 실행에 약 1분 소요됨)
+        time.sleep(1.0) 
 
 if __name__ == "__main__":
     fetch_and_process()
